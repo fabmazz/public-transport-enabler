@@ -87,7 +87,7 @@ public final class DbProvider extends AbstractNetworkProvider {
             Capability.TRIPS,
             Capability.TRIPS_VIA);
 
-    private static final HttpUrl API_BASE = HttpUrl.parse("https://app.vendo.noncd.db.de/mob/");
+    private static final HttpUrl API_BASE = HttpUrl.parse("https://app.services-bahn.de/mob/");
     private final ResultHeader resultHeader;
 
     private static final Map<String, Product> PRODUCTS_MAP = new LinkedHashMap<String, Product>() {
