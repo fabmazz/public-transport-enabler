@@ -31,7 +31,7 @@ public enum NetworkId {
     OEBB, VAO, VOR, WIEN, OOEVV, LINZ, SVV, VVT, STV, VMOBIL,
 
     // Switzerland
-    VBL, ZVV,
+    ZVV,
 
     // Netherlands
     NS, NEGENTWEE,
@@ -56,7 +56,4 @@ public enum NetworkId {
 
     // United States
     BART,
-
-    // Australia
-    SYDNEY,
 }
