@@ -6,8 +6,10 @@ plugins {
 group = 'de.schildbach.pte'
 version = 'SNAPSHOT'
 
-base {
-    archivesName = 'public-transport-enabler'
+if (GradleVersion.current() >= GradleVersion.version('7.1')) {
+    base.archivesName = 'public-transport-enabler'
+} else {
+    archivesBaseName = 'public-transport-enabler'
 }
 
 repositories {
