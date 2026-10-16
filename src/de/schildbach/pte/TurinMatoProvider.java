@@ -1,0 +1,456 @@
+/*
+ * Copyright the original author or authors.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package de.schildbach.pte;
+
+import de.schildbach.pte.dto.*;
+import de.schildbach.pte.exception.ParserException;
+import de.schildbach.pte.util.GraphQLClient;
+import org.jetbrains.annotations.Nullable;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.*;
+
+import static de.schildbach.pte.util.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
+
+public class TurinMatoProvider extends AbstractNetworkProvider{
+    private static final String URL="https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
+
+    private final GraphQLClient graphQLClient;
+    private final int MAX_DEPARTURES_DEFAULT = 10;
+    public TurinMatoProvider() {
+        super(NetworkId.MATO);
+        setStyles(STYLES);
+        setRequestUrlEncoding(StandardCharsets.UTF_8);
+        setNumTripsRequested(6);
+        httpClient.setHeader("Host", "mapi.5t.torino.it");
+        graphQLClient = new GraphQLClient(this.httpClient);
+    }
+
+    private final List CAPABILITIES = Arrays.asList(
+            Capability.SUGGEST_LOCATIONS,
+            Capability.NEARBY_LOCATIONS,
+            Capability.DEPARTURES,
+            Capability.TRIPS,
+            Capability.TRIPS_VIA
+    );
+    @Override
+    public final boolean hasCapability(final Capability capability) {
+        return CAPABILITIES.contains(capability);
+    }
+
+    @Override
+    public Point[] getArea() throws IOException {
+        //city center
+        return new Point[] {Point.fromDouble(45.0677551, 7.6824892)};
+    }
+
+    @Override
+    public Set<Product> defaultProducts() {
+        return EnumSet.of(Product.BUS, Product.TRAM, Product.SUBURBAN_TRAIN, Product.SUBWAY);
+    }
+
+
+    @Override
+    public NearbyLocationsResult queryNearbyLocations(Set<LocationType> types, Location location, int maxDistance, int maxLocations) throws IOException {
+        return null;
+    }
+
+    private Line parseJsonRoute(JSONObject route) throws JSONException{
+        final String mode = route.getString("mode");
+        final String routeId = route.getString("gtfsId");
+        final Product product;
+        switch (mode) {
+            case "RAIL":
+                product = Product.SUBURBAN_TRAIN;
+                break;
+            case  "SUBWAY":
+                product = Product.SUBWAY;
+                break;
+            case "TRAM":
+                product = Product.TRAM;
+                break;
+            case "CABLE_CAR":
+            case "FUNICULAR":
+                product = Product.CABLECAR;
+                break;
+            case "BUS":
+            default:
+                product = Product.BUS;
+        }
+
+        return new Line(routeId,
+                routeId.split(":")[0],
+                product,
+                route.getString("shortName"), STYLES.get(routeId)
+                );
+    }
+    private Location parseStopLocation(JSONObject stopJson) throws JSONException{
+        return new Location(LocationType.STATION,
+                stopJson.getString("gtfsId"),
+                Point.fromDouble(stopJson.getDouble("lat"), stopJson.getDouble("lon")),
+                stopJson.getString("desc"),
+                stopJson.getString("name")
+        );
+    }
+
+    @Override
+    public QueryDeparturesResult queryDepartures(String stationId, @Nullable Date time, int maxDepartures, boolean equivs) throws IOException {
+        //need 3 things: timestamp (seconds), string of the station, and maxDepartures
+        requireNonNull(stationId);
+        final ResultHeader resultHeader = new ResultHeader(this.network, "arrivals");
+
+        QueryDeparturesResult departuresResult = null;
+
+        JSONObject currentObject = null;
+        try{
+            HashMap<String,Object> args = new HashMap<>();
+            args.put("name", stationId);
+            Instant instant;
+            if (time!=null) instant = time.toInstant();
+            else instant = Instant.now();
+            args.put("startTime", (long) (instant.toEpochMilli()/1000));
+            int numDep;
+            if (maxDepartures == 0) numDep = 3;
+            else numDep = maxDepartures;
+            args.put("numberOfDepartures", numDep);
+
+            JSONObject requestResult = graphQLClient.makeRequest(URL, "StopArrivals",args, Queries.QUERY_ARRIVALS);
+            currentObject = requestResult;
+
+            if(GraphQLClient.countErrors(requestResult) > 0){
+                //TODO: Do something better with the errors
+                return new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.INVALID_STATION);
+            }
+            JSONObject dataJson = requestResult.getJSONObject("data");
+            if(dataJson.isNull("stop")){
+                return new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.INVALID_STATION);
+            }
+            JSONObject stopJson = dataJson.getJSONObject("stop");
+            currentObject = stopJson;
+
+            departuresResult = new QueryDeparturesResult(resultHeader);
+
+            final Location stopLocation = parseStopLocation(stopJson);
+            final JSONArray patterns = stopJson.getJSONArray("stoptimesForPatterns");
+            //final HashMap<String,ArrayList<Departure>> departuresByPattern = new HashMap<>();
+            final ArrayList<Departure> departures = new ArrayList<>();
+            final ArrayList<Departure> extraDeps = new ArrayList<>();
+            for (int i = 0; i < patterns.length(); i++) {
+                final JSONObject patternStops = patterns.getJSONObject(i);
+                currentObject = patternStops;
+                final JSONObject pat = patternStops.getJSONObject("pattern");
+                final JSONObject route = pat.getJSONObject("route");
+
+                final Line line = parseJsonRoute(route);
+
+                final Location destination = new Location(LocationType.ADDRESS, null, null, pat.getString("headsign"));
+
+                final JSONArray times = patternStops.getJSONArray("stoptimes");
+                //final String patternCode = pat.getString("code");
+                final ArrayList<Departure> patternDeps = new ArrayList<>();
+
+
+                for (int j = 0; j < times.length(); j++) {
+                    final JSONObject st = times.getJSONObject(j);
+                    if ("CANCELED".equals(st.optString("realtimeState"))) continue;
+
+                    final long day = st.getLong("serviceDay");            // epoch mezzanotte
+                    final Date planned = new Date((day + st.getLong("scheduledDeparture")) * 1000);
+                    final Date predicted = st.optBoolean("realtime")
+                            ? new Date((day + st.getLong("realtimeDeparture")) * 1000) : null;
+                    //TODO check if position=null is OK
+                    final Departure dep = (new Departure(planned, predicted, line, null, destination, null, null));
+                    //departures.add(dep);
+                    patternDeps.add(dep);
+                }
+                //TODO: Decide if to show at least one departure for each line
+                final int minNumPatt = 0; // set to 1
+                Collections.sort(patternDeps,Departure.TIME_COMPARATOR);
+                //departuresByPattern.put(patternCode, patternDeps);
+                if (patternDeps.isEmpty())
+                    continue;
+                departures.addAll(patternDeps.subList(0, minNumPatt));
+                extraDeps.addAll(patternDeps.subList(minNumPatt, patternDeps.size()));
+            }
+
+            if (departures.size() < maxDepartures){
+                int nadd = maxDepartures - departures.size();
+                Collections.sort(extraDeps, Departure.TIME_COMPARATOR);
+                departures.addAll(extraDeps.subList(0, Math.min(nadd, extraDeps.size())));
+            }
+
+            //minor TODO: Decide how to cut short the list, at some stops
+            //
+            departuresResult.stationDepartures.add(new StationDepartures(stopLocation, departures, null));
+
+        } catch (JSONException exc){
+            throw  new ParserException("Error when parsing JSON in request: "+currentObject, exc);
+        } catch (RuntimeException e) {
+            departuresResult= new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.SERVICE_DOWN);
+        }
+
+        return departuresResult;
+    }
+
+    @Override
+    public SuggestLocationsResult suggestLocations(CharSequence constraint, @Nullable Set<LocationType> types, int maxLocations) throws IOException {
+        return null;
+    }
+
+    @Override
+    public QueryTripsResult queryTrips(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) throws IOException {
+        return null;
+    }
+
+    @Override
+    public QueryTripsResult queryMoreTrips(QueryTripsContext context, boolean later) throws IOException {
+        return null;
+    }
+    // ------ GraphQL Queries -----
+
+    // ----- STYLES STUFF -----
+    private static final Map<String, Style> STYLES = new HashMap<>();
+
+    private static void addStyle(String key, String hex) {
+        STYLES.put(key, new Style(Style.parseColor(hex), Style.WHITE));
+    }
+    static {
+        addStyle("gtt:3105E", "#0080ff");
+        addStyle("gtt:METROU", "#ff0000");
+        addStyle("gtt:75U", "#ff9900");
+        addStyle("gtt:63U", "#ff9900");
+        addStyle("gtt:51U", "#ff9900");
+        addStyle("gtt:5135E", "#0080ff");
+        addStyle("gtt:3445E", "#0080ff");
+        addStyle("gtt:3106E", "#0080ff");
+        addStyle("gtt:16CDU", "#cc9900");
+        addStyle("gtt:W60U", "#ff9900");
+        addStyle("gtt:4546E", "#0080ff");
+        addStyle("gtt:2016E", "#0080ff");
+        addStyle("gtt:3990U", "#33cc00");
+        addStyle("gtt:50U", "#ff9900");
+        addStyle("gtt:VE1U", "#ff9900");
+        addStyle("gtt:74U", "#ff9900");
+        addStyle("gtt:62U", "#ff9900");
+        addStyle("gtt:3006E", "#0080ff");
+        addStyle("gtt:3321E", "#0080ff");
+        addStyle("gtt:65U", "#ff9900");
+        addStyle("gtt:53U", "#ff9900");
+        addStyle("gtt:89U", "#ff9900");
+        addStyle("gtt:2027E", "#0080ff");
+        addStyle("gtt:77U", "#ff9900");
+        addStyle("gtt:2354E", "#0080ff");
+        addStyle("gtt:VE2U", "#ff9900");
+        addStyle("gtt:41U", "#ff9900");
+        addStyle("gtt:5379E", "#0080ff");
+        addStyle("gtt:5137E", "#0080ff");
+        addStyle("gtt:3310E", "#0080ff");
+        addStyle("gtt:76U", "#ff9900");
+        addStyle("gtt:64U", "#ff9900");
+        addStyle("gtt:88U", "#ff9900");
+        addStyle("gtt:4108E", "#0080ff");
+        addStyle("gtt:2014E", "#0080ff");
+        addStyle("gtt:52U", "#ff9900");
+        addStyle("gtt:40U", "#ff9900");
+        addStyle("gtt:5322E", "#0080ff");
+        addStyle("gtt:3331E", "#0080ff");
+        addStyle("gtt:43U", "#ff9900");
+        addStyle("gtt:67U", "#ff9900");
+        addStyle("gtt:55U", "#ff9900");
+        addStyle("gtt:4541E", "#0080ff");
+        addStyle("gtt:79U", "#33cc00");
+        addStyle("gtt:S04U", "#ff9900");
+        addStyle("gtt:1NU", "#ff9900");
+        addStyle("gtt:1068E", "#0080ff");
+        addStyle("gtt:54U", "#ff9900");
+        addStyle("gtt:42U", "#ff9900");
+        addStyle("gtt:78U", "#ff9900");
+        addStyle("gtt:66U", "#ff9900");
+        addStyle("gtt:S05U", "#ff9900");
+        addStyle("gtt:30U", "#ff9900");
+        addStyle("gtt:13BU", "#ff9900");
+        addStyle("gtt:59BU", "#ff9900");
+        addStyle("gtt:45U", "#ff9900");
+        addStyle("gtt:33U", "#ff9900");
+        addStyle("gtt:69U", "#ff9900");
+        addStyle("gtt:S18U", "#ff9900");
+        addStyle("gtt:19NU", "#ff9900");
+        addStyle("gtt:VEXU", "#33cc00");
+        addStyle("gtt:32U", "#ff9900");
+        addStyle("gtt:20U", "#ff9900");
+        addStyle("gtt:56U", "#ff9900");
+        addStyle("gtt:44U", "#ff9900");
+        addStyle("gtt:68U", "#ff9900");
+        addStyle("gtt:2CU", "#ff9900");
+        addStyle("gtt:NPVU", "#ff9900");
+        addStyle("gtt:3133E", "#0080ff");
+        addStyle("gtt:3121E", "#0080ff");
+        addStyle("gtt:SE1U", "#ff9900");
+        addStyle("gtt:10NU", "#ff9900");
+        addStyle("gtt:132U", "#ff9900");
+        addStyle("gtt:SE2U", "#ff9900");
+        addStyle("gtt:N08U", "#ff9900");
+        addStyle("gtt:1CU", "#ff9900");
+        addStyle("gtt:1087E", "#0080ff");
+        addStyle("gtt:1099E", "#0080ff");
+        addStyle("gtt:3131E", "#0080ff");
+        addStyle("gtt:4147E", "#0080ff");
+        addStyle("gtt:72BU", "#ff9900");
+        addStyle("gtt:159U", "#ff9900");
+        addStyle("gtt:81U", "#ff9900");
+        addStyle("gtt:3023E", "#0080ff");
+        addStyle("gtt:ST1U", "#ff9900");
+        addStyle("gtt:1086E", "#0080ff");
+        addStyle("gtt:3132E", "#0080ff");
+        addStyle("gtt:80U", "#ff9900");
+        addStyle("gtt:5318E", "#0080ff");
+        addStyle("gtt:ST2U", "#ff9900");
+        addStyle("gtt:1085E", "#0080ff");
+        addStyle("gtt:3165E", "#0080ff");
+        addStyle("gtt:4157E", "#0080ff");
+        addStyle("gtt:5319E", "#0080ff");
+        addStyle("gtt:83U", "#ff9900");
+        addStyle("gtt:71U", "#ff9900");
+        addStyle("gtt:3166E", "#0080ff");
+        addStyle("gtt:70U", "#ff9900");
+        addStyle("gtt:82U", "#ff9900");
+        addStyle("gtt:17BU", "#ff9900");
+        addStyle("gtt:93BU", "#ff9900");
+        addStyle("gtt:2172E", "#0080ff");
+        addStyle("gtt:44SU", "#ff9900");
+        addStyle("gtt:61U", "#ff9900");
+        addStyle("gtt:4155E", "#0080ff");
+        addStyle("gtt:73U", "#ff9900");
+        addStyle("gtt:3382E", "#0080ff");
+        addStyle("gtt:4156E", "#0080ff");
+        addStyle("gtt:4168E", "#0080ff");
+        addStyle("gtt:102U", "#ff9900");
+        addStyle("gtt:2183E", "#0080ff");
+        addStyle("gtt:72U", "#ff9900");
+        addStyle("gtt:60U", "#ff9900");
+        addStyle("gtt:84U", "#ff9900");
+        addStyle("gtt:5095E", "#0080ff");
+        addStyle("gtt:N10U", "#ff9900");
+        addStyle("gtt:19U", "#ff9900");
+        addStyle("gtt:2073E", "#0080ff");
+        addStyle("gtt:9U", "#cc9900");
+        addStyle("gtt:4153E", "#0080ff");
+        addStyle("gtt:89BU", "#ff9900");
+        addStyle("gtt:18U", "#ff9900");
+        addStyle("gtt:8U", "#ff9900");
+        addStyle("gtt:4154E", "#0080ff");
+        addStyle("gtt:1091E", "#0080ff");
+        addStyle("gtt:CP1U", "#ff9900");
+        addStyle("gtt:16CSU", "#cc9900");
+        addStyle("gtt:36NU", "#ff9900");
+        addStyle("gtt:OB1U", "#ff9900");
+        addStyle("gtt:4151E", "#0080ff");
+        addStyle("gtt:E68U", "#ff9900");
+        addStyle("gtt:1511E", "#0080ff");
+        addStyle("gtt:5BU", "#ff9900");
+        addStyle("gtt:4152E", "#0080ff");
+        addStyle("gtt:3096E", "#0080ff");
+        addStyle("gtt:1510E", "#0080ff");
+        addStyle("gtt:35NU", "#ff9900");
+        addStyle("gtt:RV2U", "#ff9900");
+        addStyle("gtt:38SU", "#ff9900");
+        addStyle("gtt:N04U", "#ff9900");
+        addStyle("gtt:5150E", "#0080ff");
+        addStyle("gtt:1435E", "#0080ff");
+        addStyle("gtt:86BU", "#ff9900");
+        addStyle("gtt:63BU", "#ff9900");
+        addStyle("gtt:58BU", "#ff9900");
+        addStyle("gtt:5140E", "#0080ff");
+        addStyle("gtt:3092E", "#0080ff");
+        addStyle("gtt:LS1U", "#ff9900");
+        addStyle("gtt:11U", "#ff9900");
+        addStyle("gtt:47U", "#ff9900");
+        addStyle("gtt:35U", "#ff9900");
+        addStyle("gtt:59U", "#ff9900");
+        addStyle("gtt:SPXU", "#ff9900");
+        addStyle("gtt:3429E", "#0080ff");
+        addStyle("gtt:3502E", "#0080ff");
+        addStyle("gtt:3950E", "#0080ff");
+        addStyle("gtt:1432E", "#0080ff");
+        addStyle("gtt:10U", "#cc9900");
+        addStyle("gtt:34U", "#ff9900");
+        addStyle("gtt:22U", "#ff9900");
+        addStyle("gtt:58U", "#ff9900");
+        addStyle("gtt:46U", "#ff9900");
+        addStyle("gtt:MEORU", "#ff9900");
+        addStyle("gtt:2U", "#ff9900");
+        addStyle("gtt:3971E", "#0080ff");
+        addStyle("gtt:25U", "#ff9900");
+        addStyle("gtt:13U", "#cc9900");
+        addStyle("gtt:49U", "#ff9900");
+        addStyle("gtt:1442E", "#0080ff");
+        addStyle("gtt:5141E", "#0080ff");
+        addStyle("gtt:1224E", "#0080ff");
+        addStyle("gtt:1128E", "#0080ff");
+        addStyle("gtt:12U", "#ff9900");
+        addStyle("gtt:36U", "#ff9900");
+        addStyle("gtt:1SU", "#ff9900");
+        addStyle("gtt:24U", "#ff9900");
+        addStyle("gtt:48U", "#ff9900");
+        addStyle("gtt:3428E", "#0080ff");
+        addStyle("gtt:3545E", "#0080ff");
+        addStyle("gtt:4U", "#cc9900");
+        addStyle("gtt:39U", "#ff9900");
+        addStyle("gtt:79BU", "#ff9900");
+        addStyle("gtt:27U", "#ff9900");
+        addStyle("gtt:15U", "#cc9900");
+        addStyle("gtt:3316E", "#0080ff");
+        addStyle("gtt:3U", "#cc9900");
+        addStyle("gtt:45BU", "#ff9900");
+        addStyle("gtt:68BU", "#ff9900");
+        addStyle("gtt:5143E", "#0080ff");
+        addStyle("gtt:2009E", "#0080ff");
+        addStyle("gtt:W01U", "#ff9900");
+        addStyle("gtt:14U", "#ff9900");
+        addStyle("gtt:38U", "#ff9900");
+        addStyle("gtt:26U", "#ff9900");
+        addStyle("gtt:3329E", "#0080ff");
+        addStyle("gtt:3107E", "#0080ff");
+        addStyle("gtt:29U", "#ff9900");
+        addStyle("gtt:17U", "#ff9900");
+        addStyle("gtt:5134E", "#0080ff");
+        addStyle("gtt:7U", "#33cc00");
+        addStyle("gtt:M1SU", "#ff9900");
+        addStyle("gtt:5U", "#ff9900");
+        addStyle("gtt:5145E", "#0080ff");
+        addStyle("gtt:4512E", "#0080ff");
+        addStyle("gtt:W15U", "#ff9900");
+        addStyle("gtt:6U", "#ff9900");
+    }
+
+    final static class Queries{
+        final static String QUERY_ARRIVALS = "query StopArrivals(\n  $name: String!\n  $startTime: Long\n  $numberOfDepartures: Int\n) {\n  stop(id: $name) {\n    lat lon gtfsId code name desc zoneId\n    wheelchairBoarding\n    " +
+                "stoptimesForPatterns(\n            startTime: $startTime\n            numberOfDepartures: $numberOfDepartures\n          ) {\n            " +
+                "pattern {\n              id\n              code\n              headsign\n              directionId\n              " +
+                "route {\n                gtfsId\n                shortName\n                mode\n                color\n              }\n            }\n     " +
+                "       stoptimes {\n              serviceDay\n              scheduledDeparture\n              realtimeDeparture\n              realtime\n              realtimeState\n            }\n    }\n  }\n}"
+                ;
+
+    }
+}
