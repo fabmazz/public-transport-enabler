@@ -395,6 +395,9 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         httpClient.setHeader("Origin", "https://mato.muoversiatorino.it");
         httpClient.setHeader("Referer", "https://mato.muoversiatorino.it/");
         httpClient.setHeader("Content-Type", "application/json");
+
+        String idquery = "from_"+from.uniqueShortName()+"_to_"+to.uniqueShortName()+"_date_"+
+                formatLocalDate(date)+"T"+formatLocalTime(date);
         //setUserAgent("Dalvik/2.1.0 (Linux; U; Android 15)");
         final JSONObject response = graphQLClient.makeRequest(URL_PLAN, Queries.NAME_QUERY_PLAN, variables, Queries.QUERY_PLAN);
         final ArrayList<Trip> trips = new ArrayList<>();
@@ -405,6 +408,9 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
 
                 final ArrayList<Trip.Leg> legs = new ArrayList<>();
                 final JSONArray legsJson = itin.getJSONArray("legs");
+                int nMezzi = 0;
+
+
                 for (int j = 0; j < legsJson.length(); j++) {
                     //each leg
                     final JSONObject legJ = legsJson.getJSONObject(j);
@@ -417,7 +423,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
 
                     if (legJ.getBoolean("transitLeg")) {
                         final JSONArray iPlaces = legJ.getJSONArray("intermediatePlaces");
-                        //TODO: Parse all stops in
                         final JSONArray allStops = legJ.getJSONObject("trip").getJSONArray("stops");
                         //assuming that there is at least one stop in the stops array
                         final Location dest = parseMatoStopIntoLocation(allStops.getJSONObject(allStops.length() - 1));
@@ -432,6 +437,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                                 intermediateStops, points, null
                                 );
                         // `message` should not be empty, but the MaTO endpoint does not provide alerts
+                        nMezzi++;
                     } else{
                         //TODO
                         Trip.Individual.Type type = Trip.Individual.Type.TRANSFER;
@@ -456,12 +462,18 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                     legs.add(leg);
 
                 }
+
+                trips.add(new Trip(idquery+"-"+i,
+                        legs.get(0).departure, legs.get(legs.size()-1).arrival, legs, null, null, nMezzi-1
+                        )
+                );
             }
+
+            return new QueryTripsResult(resultHeader, null, from, via, to, null, trips);
 
         } catch (JSONException e) {
             throw new IOException("Could not parse JSON of response", e);
         }
-        return null;
     }
 
     @Override
