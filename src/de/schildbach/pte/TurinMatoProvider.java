@@ -38,7 +38,7 @@ import static java.util.Objects.requireNonNull;
 public class TurinMatoProvider extends AbstractNetworkProvider{
     private static final String URL="https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
     private static final String URL_PLAN =  "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
-    protected static final String SERVER_PRODUCT = "efa";
+    protected static final String SERVER_PRODUCT = "mato";
 
 
     private final GraphQLClient graphQLClient;
@@ -49,7 +49,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         setTimeZone("Europe/Rome");
         setRequestUrlEncoding(StandardCharsets.UTF_8);
         setNumTripsRequested(6);
-        httpClient.setHeader("Host", "mapi.5t.torino.it");
+        //httpClient.setHeader("Host", "mapi.5t.torino.it");
         graphQLClient = new GraphQLClient(this.httpClient);
     }
 
@@ -124,7 +124,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public QueryDeparturesResult queryDepartures(String stationId, @Nullable Date time, int maxDepartures, boolean equivs) throws IOException {
         //need 3 things: timestamp (seconds), string of the station, and maxDepartures
         requireNonNull(stationId);
-        final ResultHeader resultHeader = new ResultHeader(this.network, "arrivals");
+        final ResultHeader resultHeader = new ResultHeader(this.network, SERVER_PRODUCT);
 
         QueryDeparturesResult departuresResult = null;
 
@@ -282,6 +282,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
 
         args.put("numItineraries", 5);
         final int DEFAULT_TRANSFER_TIME = 120;
+        //TODO: move this with options -> Product
+        args.put("modes","BUS,TRAM,SUBWAY,RAIL,WALK");
 
         if(options == null){
             //Set default
@@ -292,7 +294,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             args.put("accessible", false);
         } else{
             double walkSpeed = 1.2;
-
             if(options.walkSpeed!=null) switch (options.walkSpeed) {
                 case FAST:
                     walkSpeed = 1.5; //circa 5.5 km/h
@@ -303,7 +304,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
                 case NORMAL: //nothing to do
             }
             args.put("walkSpeed", walkSpeed);
-
             int walkBoardCost = 600;
             int minTransferTime = DEFAULT_TRANSFER_TIME;
             int walkReluctance = 1;
@@ -320,11 +320,12 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             args.put("walkBoardCost", walkBoardCost);
             args.put("minTransferTime", minTransferTime);
             args.put("walkReluctance", walkReluctance);
-
             args.put( "accessible",
                     (options.accessibility!=null && options.accessibility.equals(Accessibility.BARRIER_FREE)));
 
         }
+
+        // products
         return args;
     }
 
@@ -342,6 +343,12 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
 
         final Map<String, Object> variables = makeTripArguments(from,via,to,date,dep,options);
 
+        httpClient.setHeader("Origin","https://mato.muoversiatorino.it");
+        httpClient.setHeader("Referer", "https://mato.muoversiatorino.it/");
+        httpClient.setHeader("Content-Type", "application/json");
+        //setUserAgent("Dalvik/2.1.0 (Linux; U; Android 15)");
+        final JSONObject response = graphQLClient.makeRequest(URL_PLAN, Queries.NAME_QUERY_PLAN, variables, Queries.QUERY_PLAN);
+
 
         return null;
     }
@@ -357,7 +364,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         return time.toInstant().atZone(ITALY).toLocalDate().format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
     public static String formatLocalTime(Date time) {
-        return time.toInstant().atZone(ITALY).toLocalTime().format(DateTimeFormatter.ISO_LOCAL_TIME);
+        return time.toInstant().atZone(ITALY).toLocalTime().withNano(0).format(DateTimeFormatter.ISO_LOCAL_TIME);
     }
 
     // ----- STYLES STUFF -----
@@ -583,5 +590,14 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
                 "       stoptimes {\n              serviceDay\n              scheduledDeparture\n              realtimeDeparture\n              realtime\n              realtimeState\n            }\n    }\n  }\n}"
                 ;
 
+        final static String NAME_QUERY_PLAN="PlanRoute";
+        final static String QUERY_PLAN = "query PlanRoute( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment F1 on Leg { mode rentedBike legGeometry { points } transitLeg route { shortName color agency { name id } id } from { lat lon name vertexType bikeRentalStation { stationId id } stop { gtfsId code platformCode id } } to { lat lon name vertexType bikeRentalStation { id } stop { gtfsId code platformCode id } } trip { stoptimes { stop { gtfsId id } pickupType } id } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode id } } } " +
+                "fragment F2 on Stop { alerts { alertSeverityLevel effectiveEndDate effectiveStartDate id } id } fragment F3 on Route { alerts { alertSeverityLevel effectiveEndDate effectiveStartDate trip { pattern { code id } id } id } id } fragment F4 on Leg { agency { name url fareUrl id } } fragment F5 on Itinerary { walkDistance duration startTime endTime elevationGained elevationLost fares { cents components { cents fareId routes { agency { gtfsId fareUrl name id } gtfsId id } } type } legs { mode from { lat lon name vertexType stop { gtfsId code platformCode zoneId id ...F2 } } to { lat lon name vertexType stop { gtfsId code platformCode zoneId id ...F2 } } legGeometry { length points } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode zoneId id ...F2 } } realTime realtimeState transitLeg rentedBike startTime endTime mode distance duration intermediatePlace route { shortName color gtfsId longName desc agency { gtfsId fareUrl name phone id } id ...F3 } " +
+                "trip { gtfsId tripHeadsign pattern { code id } stoptimes { pickupType realtimeState stop { gtfsId id } } id } ...F4 } } " +
+                "fragment F6 on Stop { gtfsId name code desc wheelchairBoarding zoneId id ...F2 } fragment F7 on Pattern { code geometry { lat lon } route { mode color id } stops { lat lon name gtfsId platformCode code id ...F6 } id } " +
+                "fragment F8 on Itinerary { walkDistance duration startTime endTime fares { cents components { cents fareId routes { agency { fareUrl gtfsId name id } gtfsId id } } type } legs { mode from { lat lon name vertexType stop { gtfsId code platformCode zoneId id } } to { lat lon name vertexType stop { gtfsId code platformCode zoneId id } } legGeometry { length points } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode zoneId id } } realTime transitLeg rentedBike startTime endTime mode distance duration intermediatePlace route { shortName color gtfsId longName agency { gtfsId fareUrl name phone id } id } trip { gtfsId tripHeadsign pattern { code directionId geometry { lat lon } stops { lat lon name gtfsId id } id ...F7 } stoptimes { pickupType stop { gtfsId id } } id } ...F4 } } " +
+                "fragment F9 on Itinerary { walkDistance startTime endTime legs { realTime realtimeState transitLeg startTime endTime mode distance duration rentedBike intermediatePlace intermediatePlaces { stop { zoneId id ...F2 } } route { mode shortName color agency { name id } id ...F3 } trip { pattern { code id } stoptimes { realtimeState stop { gtfsId id } pickupType } id } from { name lat lon stop { gtfsId zoneId id ...F2 } bikeRentalStation { bikesAvailable networks id } } to { stop { gtfsId zoneId id ...F2 } } } } fragment Fa on Itinerary { endTime startTime ...F9 } fragment Fb on Plan { date } " +
+                "fragment Fc on QueryType { _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { transitLeg legGeometry { points } ...F1 } ...F5 ...F8 ...Fa } ...Fb } }"
+                ;
     }
 }

@@ -43,12 +43,12 @@ public class GraphQLClient {
     }
 
     @NotNull
-    public JSONObject makeRequest(String urlString, String operationName, Map<String, Object> variables, String query) throws IOException {
+    public JSONObject makeRequest(@NotNull String urlString,@NotNull String operationName,@NotNull Map<String, Object> variables,@NotNull String query) throws IOException {
         JSONObject qar;
         try {
             qar = new JSONObject();
             qar.put("operationName", operationName);
-            qar.put("variables", variables);
+            qar.put("variables", new JSONObject(variables));
             qar.put("query", query);
         } catch (JSONException e) {
             throw new ParserException("cannot parse add objects to GraphQL request, operationName: "+operationName +", variables: "+variables, e);
