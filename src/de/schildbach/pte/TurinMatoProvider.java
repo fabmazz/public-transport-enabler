@@ -420,7 +420,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                         //TODO: Parse all stops in
                         final JSONArray allStops = legJ.getJSONObject("trip").getJSONArray("stops");
                         //assuming that there is at least one stop in the stops array
-                        final Location dest = parseMatoStopIntoLocation(allStops.getJSONObject(allStops.getInt(allStops.length() - 1)));
+                        final Location dest = parseMatoStopIntoLocation(allStops.getJSONObject(allStops.length() - 1));
 
                         final ArrayList<Stop> intermediateStops = new ArrayList<>();
                         for(int k=0; k<iPlaces.length(); k++){
@@ -447,9 +447,9 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                         }
 
                         leg = new Trip.Individual(type, parseMatoPlaceIntoLocation(posFromJ),
-                                Date.from(Instant.ofEpochMilli(posFromJ.getLong("startTime"))),
+                                Date.from(Instant.ofEpochMilli(legJ.getLong("startTime"))),
                                 parseMatoPlaceIntoLocation(posToJ),
-                                Date.from(Instant.ofEpochMilli(posFromJ.getLong("endTime"))),
+                                Date.from(Instant.ofEpochMilli(legJ.getLong("endTime"))),
                                 points, (int) legJ.getDouble("distance")
                                 );
                     }
