@@ -20,6 +20,7 @@ package de.schildbach.pte;
 import de.schildbach.pte.dto.*;
 import de.schildbach.pte.exception.ParserException;
 import de.schildbach.pte.util.GraphQLClient;
+import de.schildbach.pte.util.PolylineFormat;
 import org.jetbrains.annotations.Nullable;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -35,14 +36,15 @@ import java.util.*;
 import static de.schildbach.pte.util.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
-public class TurinMatoProvider extends AbstractNetworkProvider{
-    private static final String URL="https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
-    private static final String URL_PLAN =  "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
+public class TurinMatoProvider extends AbstractNetworkProvider {
+    private static final String URL = "https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
+    private static final String URL_PLAN = "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
     protected static final String SERVER_PRODUCT = "mato";
 
 
     private final GraphQLClient graphQLClient;
     private final int MAX_DEPARTURES_DEFAULT = 10;
+
     public TurinMatoProvider() {
         super(NetworkId.MATO);
         setStyles(STYLES);
@@ -60,6 +62,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             Capability.TRIPS
             //Capability.TRIPS_VIA
     );
+
     @Override
     public final boolean hasCapability(final Capability capability) {
         return CAPABILITIES.contains(capability);
@@ -68,7 +71,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     @Override
     public Point[] getArea() throws IOException {
         //city center
-        return new Point[] {Point.fromDouble(45.0677551, 7.6824892)};
+        return new Point[]{Point.fromDouble(45.0677551, 7.6824892)};
     }
 
     @Override
@@ -82,7 +85,15 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         return null;
     }
 
-    private Line parseJsonRoute(JSONObject route) throws JSONException{
+    /**
+     * Build a Line from a JSON route. Uses attributes: "mode", "gtfsId","shortName", "color"
+     * It would be cool to use the "longName" attribute too
+     *
+     * @param route the JSON route
+     * @return the equivalent Line
+     * @throws JSONException
+     */
+    private Line parseJsonRoute(JSONObject route) throws JSONException {
         final String mode = route.getString("mode");
         final String routeId = route.getString("gtfsId");
         final Product product;
@@ -90,7 +101,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             case "RAIL":
                 product = Product.SUBURBAN_TRAIN;
                 break;
-            case  "SUBWAY":
+            case "SUBWAY":
                 product = Product.SUBWAY;
                 break;
             case "TRAM":
@@ -108,16 +119,49 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         return new Line(routeId,
                 routeId.split(":")[0],
                 product,
-                route.getString("shortName"), new Style(Style.parseColor("#"+route.getString("color")), Style.WHITE)
-                );
+                route.getString("shortName"), new Style(Style.parseColor("#" + route.getString("color")), Style.WHITE)
+        );
     }
-    private Location parseStopLocation(JSONObject stopJson) throws JSONException{
+
+    private Location parseMatoStopIntoLocation(JSONObject stopJson) throws JSONException {
         return new Location(LocationType.STATION,
                 stopJson.getString("gtfsId"),
                 Point.fromDouble(stopJson.getDouble("lat"), stopJson.getDouble("lon")),
                 stopJson.getString("desc"),
                 stopJson.getString("name")
         );
+    }
+    private Location parseMatoPlaceIntoLocation(JSONObject placeJson) throws  JSONException {
+        return new Location(LocationType.ADDRESS, null,
+                Point.fromDouble(placeJson.getDouble("lat"), placeJson.getDouble("lon")), null,
+                placeJson.getString("name"), null
+        );
+    }
+
+    private Stop parseMatoPlaceIntoStop(JSONObject placeJson, boolean isUpdated, boolean isCanceled) throws JSONException {
+        //stop has departure time and arrival time
+        final JSONObject stopJson = placeJson.optJSONObject("stop");
+        final Location location;
+        if (stopJson == null){
+            location = new Location(LocationType.ADDRESS, null,
+                    Point.fromDouble(placeJson.getDouble("lat"), placeJson.getDouble("lon")), null,
+                    placeJson.getString("name"), null
+                    );
+                    //Location.coord(Point.fromDouble(placeJson.getDouble("lat"), placeJson.getDouble("lon")));
+        } else {
+             location = parseMatoStopIntoLocation(stopJson);
+        }
+
+        final Date departureDate = Date.from(Instant.ofEpochMilli(placeJson.getLong("departureTime")));
+        final Date arrivalDate = Date.from(Instant.ofEpochMilli(placeJson.getLong("arrivalTime")));
+        final Position pos = stopJson.has("platformCode") ? new Position(stopJson.getString("platformCode")) : null;
+
+        return new Stop(location,
+                isUpdated ? null : departureDate, isUpdated? departureDate : null,
+                isUpdated ? null : pos, isUpdated? pos : null, isCanceled,
+                isUpdated ? null : arrivalDate, isUpdated? arrivalDate : null,
+                isUpdated ? null : pos, isUpdated? pos : null, isCanceled
+                );
     }
 
     @Override
@@ -129,27 +173,27 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         QueryDeparturesResult departuresResult = null;
 
         JSONObject currentObject = null;
-        try{
-            HashMap<String,Object> args = new HashMap<>();
+        try {
+            HashMap<String, Object> args = new HashMap<>();
             args.put("name", stationId);
             Instant instant;
-            if (time!=null) instant = time.toInstant();
+            if (time != null) instant = time.toInstant();
             else instant = Instant.now();
-            args.put("startTime", (long) (instant.toEpochMilli()/1000));
+            args.put("startTime", (long) (instant.toEpochMilli() / 1000));
             int numDep;
             if (maxDepartures == 0) numDep = 3;
             else numDep = maxDepartures;
             args.put("numberOfDepartures", numDep);
 
-            JSONObject requestResult = graphQLClient.makeRequest(URL, "StopArrivals",args, Queries.QUERY_ARRIVALS);
+            JSONObject requestResult = graphQLClient.makeRequest(URL, "StopArrivals", args, Queries.QUERY_ARRIVALS);
             currentObject = requestResult;
 
-            if(GraphQLClient.countErrors(requestResult) > 0){
+            if (GraphQLClient.countErrors(requestResult) > 0) {
                 //TODO: Do something better with the errors
                 return new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.INVALID_STATION);
             }
             JSONObject dataJson = requestResult.getJSONObject("data");
-            if(dataJson.isNull("stop")){
+            if (dataJson.isNull("stop")) {
                 return new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.INVALID_STATION);
             }
             JSONObject stopJson = dataJson.getJSONObject("stop");
@@ -157,7 +201,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
 
             departuresResult = new QueryDeparturesResult(resultHeader);
 
-            final Location stopLocation = parseStopLocation(stopJson);
+            final Location stopLocation = parseMatoStopIntoLocation(stopJson);
             final JSONArray patterns = stopJson.getJSONArray("stoptimesForPatterns");
             //final HashMap<String,ArrayList<Departure>> departuresByPattern = new HashMap<>();
             final ArrayList<Departure> departures = new ArrayList<>();
@@ -192,7 +236,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
                 }
                 //TODO: Decide if to show at least one departure for each line
                 final int minNumPatt = 0; // set to 1
-                Collections.sort(patternDeps,Departure.TIME_COMPARATOR);
+                Collections.sort(patternDeps, Departure.TIME_COMPARATOR);
                 //departuresByPattern.put(patternCode, patternDeps);
                 if (patternDeps.isEmpty())
                     continue;
@@ -200,7 +244,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
                 extraDeps.addAll(patternDeps.subList(minNumPatt, patternDeps.size()));
             }
 
-            if (departures.size() < maxDepartures){
+            if (departures.size() < maxDepartures) {
                 int nadd = maxDepartures - departures.size();
                 Collections.sort(extraDeps, Departure.TIME_COMPARATOR);
                 departures.addAll(extraDeps.subList(0, Math.min(nadd, extraDeps.size())));
@@ -210,10 +254,10 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             //
             departuresResult.stationDepartures.add(new StationDepartures(stopLocation, departures, null));
 
-        } catch (JSONException exc){
-            throw  new ParserException("Error when parsing JSON in request: "+currentObject, exc);
+        } catch (JSONException exc) {
+            throw new ParserException("Error when parsing JSON in request: " + currentObject, exc);
         } catch (RuntimeException e) {
-            departuresResult= new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.SERVICE_DOWN);
+            departuresResult = new QueryDeparturesResult(resultHeader, QueryDeparturesResult.Status.SERVICE_DOWN);
         }
 
         return departuresResult;
@@ -223,8 +267,9 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public SuggestLocationsResult suggestLocations(CharSequence constraint, @Nullable Set<LocationType> types, int maxLocations) throws IOException {
         return null;
     }
+
     // ------- TRIP UTILS -----
-    private HashMap<String, Object> getDefaultTripArguments(){
+    private HashMap<String, Object> getDefaultTripArguments() {
         HashMap<String, Object> args = new HashMap<>();
         /*
         An extra penalty added on transfers (i.e. all boardings except the first
@@ -244,13 +289,13 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     private String getStringForLocation(Location location) {
 
         StringBuilder sb = new StringBuilder();
-        if(location.name!=null)
+        if (location.name != null)
             sb.append(location.name);
-        else if(location.place!=null)
+        else if (location.place != null)
             sb.append(location.place);
         //do not append anything else
         sb.append("::");
-        if(location.coord!=null){
+        if (location.coord != null) {
             sb.append(location.coord.getLatAsDouble());
             sb.append(",");
             sb.append(location.coord.getLonAsDouble());
@@ -258,12 +303,12 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         return sb.toString();
     }
 
-    private Map<String,Object> makeTripArguments(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options){
+    private Map<String, Object> makeTripArguments(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) {
         //first, get time and day
         final String dayStr = formatLocalDate(date);
         final String timeStr = formatLocalTime(date);
 
-        final Map<String,Object> args = getDefaultTripArguments();
+        final Map<String, Object> args = getDefaultTripArguments();
         args.put("date", dayStr);
         args.put("time", timeStr);
         args.put("fromPlace", getStringForLocation(from));
@@ -271,30 +316,30 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         args.put("arriveBy", !dep);
 
         //intermediate location
-        final ArrayList<HashMap<String,Double>> intermediateLocs = new ArrayList<>();
-        if(via!=null){
-            final HashMap<String,Double> map = new HashMap<>();
+        final ArrayList<HashMap<String, Double>> intermediateLocs = new ArrayList<>();
+        if (via != null) {
+            final HashMap<String, Double> map = new HashMap<>();
             map.put("lat", via.getLatAsDouble());
             map.put("lon", via.getLonAsDouble());
             intermediateLocs.add(map);
         }
-        args.put("intermediatePlaces",intermediateLocs);
+        args.put("intermediatePlaces", intermediateLocs);
 
         args.put("numItineraries", 5);
         final int DEFAULT_TRANSFER_TIME = 120;
         //TODO: move this with options -> Product
-        args.put("modes","BUS,TRAM,SUBWAY,RAIL,WALK");
+        args.put("modes", "BUS,TRAM,SUBWAY,RAIL,WALK");
 
-        if(options == null){
+        if (options == null) {
             //Set default
             args.put("walkBoardCost", 600); // cost in seconds
             args.put("minTransferTime", DEFAULT_TRANSFER_TIME); //in seconds
             args.put("walkReluctance", 1);
             args.put("walkSpeed", 1.2);
             args.put("accessible", false);
-        } else{
+        } else {
             double walkSpeed = 1.2;
-            if(options.walkSpeed!=null) switch (options.walkSpeed) {
+            if (options.walkSpeed != null) switch (options.walkSpeed) {
                 case FAST:
                     walkSpeed = 1.5; //circa 5.5 km/h
                     break;
@@ -307,7 +352,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             int walkBoardCost = 600;
             int minTransferTime = DEFAULT_TRANSFER_TIME;
             int walkReluctance = 1;
-            if(options.optimize!=null) switch (options.optimize) {
+            if (options.optimize != null) switch (options.optimize) {
                 case LEAST_CHANGES:
                     walkBoardCost = 3600;
                     break;
@@ -320,8 +365,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             args.put("walkBoardCost", walkBoardCost);
             args.put("minTransferTime", minTransferTime);
             args.put("walkReluctance", walkReluctance);
-            args.put( "accessible",
-                    (options.accessibility!=null && options.accessibility.equals(Accessibility.BARRIER_FREE)));
+            args.put("accessible",
+                    (options.accessibility != null && options.accessibility.equals(Accessibility.BARRIER_FREE)));
 
         }
 
@@ -331,25 +376,87 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
 
     @Override
     public QueryTripsResult queryTrips(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) throws IOException {
-        final ResultHeader resultHeader = new ResultHeader(network,SERVER_PRODUCT);
+        final ResultHeader resultHeader = new ResultHeader(network, SERVER_PRODUCT);
 
-        if(from==null || !from.hasCoord()){
+        if (from == null || !from.hasCoord()) {
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_FROM);
-        } else if(to==null || !to.hasCoord()){
+        } else if (to == null || !to.hasCoord()) {
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_TO);
         }
-        if(via!=null && !via.hasCoord())
+        if (via != null && !via.hasCoord())
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_VIA);
 
-        final Map<String, Object> variables = makeTripArguments(from,via,to,date,dep,options);
+        final Map<String, Object> variables = makeTripArguments(from, via, to, date, dep, options);
 
-        httpClient.setHeader("Origin","https://mato.muoversiatorino.it");
+        httpClient.setHeader("Origin", "https://mato.muoversiatorino.it");
         httpClient.setHeader("Referer", "https://mato.muoversiatorino.it/");
         httpClient.setHeader("Content-Type", "application/json");
         //setUserAgent("Dalvik/2.1.0 (Linux; U; Android 15)");
         final JSONObject response = graphQLClient.makeRequest(URL_PLAN, Queries.NAME_QUERY_PLAN, variables, Queries.QUERY_PLAN);
+        final ArrayList<Trip> trips = new ArrayList<>();
+        try {
+            final JSONArray iters = response.getJSONObject("data").getJSONObject("viewer").getJSONObject("_planMyRoute").getJSONArray("itineraries");
+            for (int i = 0; i < iters.length(); i++) {
+                final JSONObject itin = iters.getJSONObject(i);
 
+                final ArrayList<Trip.Leg> legs = new ArrayList<>();
+                final JSONArray legsJson = itin.getJSONArray("legs");
+                for (int j = 0; j < legsJson.length(); j++) {
+                    //each leg
+                    final JSONObject legJ = legsJson.getJSONObject(j);
+                    final boolean isCancelled = "CANCELED".equals(legJ.getString("realtimeState"));
+                    final boolean isRealtime = "UPDATED".equals(legJ.getString("realtimeState"));
+                    final Trip.Leg leg;
+                    final JSONObject posFromJ = legJ.getJSONObject("from");
+                    final JSONObject posToJ = legJ.getJSONObject("to");
+                    final List<Point> points = PolylineFormat.decode(legJ.getJSONObject("legGeometry").getString("points"));
 
+                    if (legJ.getBoolean("transitLeg")) {
+                        final JSONArray iPlaces = legJ.getJSONArray("intermediatePlaces");
+                        //TODO: Parse all stops in
+                        final JSONArray allStops = legJ.getJSONObject("trip").getJSONArray("stops");
+                        //assuming that there is at least one stop in the stops array
+                        final Location dest = parseMatoStopIntoLocation(allStops.getJSONObject(allStops.getInt(allStops.length() - 1)));
+
+                        final ArrayList<Stop> intermediateStops = new ArrayList<>();
+                        for(int k=0; k<iPlaces.length(); k++){
+                            intermediateStops.add(parseMatoPlaceIntoStop(iPlaces.getJSONObject(k), isRealtime, isCancelled));
+                        }
+                        leg = new Trip.Public(parseJsonRoute(legJ.getJSONObject("route")),
+                                dest, parseMatoPlaceIntoStop(posFromJ, isRealtime, isCancelled),
+                                parseMatoPlaceIntoStop(posToJ, isRealtime, isCancelled),
+                                intermediateStops, points, null
+                                );
+                        // `message` should not be empty, but the MaTO endpoint does not provide alerts
+                    } else{
+                        //TODO
+                        Trip.Individual.Type type = Trip.Individual.Type.TRANSFER;
+                        switch( legJ.getString("mode")){
+                            case "CAR":
+                                type = Trip.Individual.Type.CAR;
+                                break;
+                            case "BICYCLE":
+                                type = Trip.Individual.Type.BIKE;
+                                break;
+                            case "WALK":
+                                type = Trip.Individual.Type.WALK;
+                        }
+
+                        leg = new Trip.Individual(type, parseMatoPlaceIntoLocation(posFromJ),
+                                Date.from(Instant.ofEpochMilli(posFromJ.getLong("startTime"))),
+                                parseMatoPlaceIntoLocation(posToJ),
+                                Date.from(Instant.ofEpochMilli(posFromJ.getLong("endTime"))),
+                                points, (int) legJ.getDouble("distance")
+                                );
+                    }
+                    legs.add(leg);
+
+                }
+            }
+
+        } catch (JSONException e) {
+            throw new IOException("Could not parse JSON of response", e);
+        }
         return null;
     }
 
@@ -357,12 +464,14 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public QueryTripsResult queryMoreTrips(QueryTripsContext context, boolean later) throws IOException {
         return null;
     }
+
     // -- dates util
     private static final ZoneId ITALY = ZoneId.of("Europe/Rome");
 
     public static String formatLocalDate(Date time) {
         return time.toInstant().atZone(ITALY).toLocalDate().format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
+
     public static String formatLocalTime(Date time) {
         return time.toInstant().atZone(ITALY).toLocalTime().withNano(0).format(DateTimeFormatter.ISO_LOCAL_TIME);
     }
@@ -373,6 +482,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     private static void addStyle(String key, String hex) {
         STYLES.put(key, new Style(Style.parseColor(hex), Style.WHITE));
     }
+
     static {
         addStyle("gtt:3105E", "#0080ff");
         addStyle("gtt:METROU", "#ff0000");
@@ -582,22 +692,16 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         addStyle("gtt:6U", "#ff9900");
     }
 
-    final static class Queries{
+    final static class Queries {
         final static String QUERY_ARRIVALS = "query StopArrivals(\n  $name: String!\n  $startTime: Long\n  $numberOfDepartures: Int\n) {\n  stop(id: $name) {\n    lat lon gtfsId code name desc zoneId\n    wheelchairBoarding\n    " +
                 "stoptimesForPatterns(\n            startTime: $startTime\n            numberOfDepartures: $numberOfDepartures\n          ) {\n            " +
                 "pattern {\n              id\n              code\n              headsign\n              directionId\n              " +
                 "route {\n                gtfsId\n                shortName\n                mode\n                color\n              }\n            }\n     " +
-                "       stoptimes {\n              serviceDay\n              scheduledDeparture\n              realtimeDeparture\n              realtime\n              realtimeState\n            }\n    }\n  }\n}"
-                ;
+                "       stoptimes {\n              serviceDay\n              scheduledDeparture\n              realtimeDeparture\n              realtime\n              realtimeState\n            }\n    }\n  }\n}";
 
-        final static String NAME_QUERY_PLAN="PlanRoute";
-        final static String QUERY_PLAN = "query PlanRoute( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment F1 on Leg { mode rentedBike legGeometry { points } transitLeg route { shortName color agency { name id } id } from { lat lon name vertexType bikeRentalStation { stationId id } stop { gtfsId code platformCode id } } to { lat lon name vertexType bikeRentalStation { id } stop { gtfsId code platformCode id } } trip { stoptimes { stop { gtfsId id } pickupType } id } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode id } } } " +
-                "fragment F2 on Stop { alerts { alertSeverityLevel effectiveEndDate effectiveStartDate id } id } fragment F3 on Route { alerts { alertSeverityLevel effectiveEndDate effectiveStartDate trip { pattern { code id } id } id } id } fragment F4 on Leg { agency { name url fareUrl id } } fragment F5 on Itinerary { walkDistance duration startTime endTime elevationGained elevationLost fares { cents components { cents fareId routes { agency { gtfsId fareUrl name id } gtfsId id } } type } legs { mode from { lat lon name vertexType stop { gtfsId code platformCode zoneId id ...F2 } } to { lat lon name vertexType stop { gtfsId code platformCode zoneId id ...F2 } } legGeometry { length points } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode zoneId id ...F2 } } realTime realtimeState transitLeg rentedBike startTime endTime mode distance duration intermediatePlace route { shortName color gtfsId longName desc agency { gtfsId fareUrl name phone id } id ...F3 } " +
-                "trip { gtfsId tripHeadsign pattern { code id } stoptimes { pickupType realtimeState stop { gtfsId id } } id } ...F4 } } " +
-                "fragment F6 on Stop { gtfsId name code desc wheelchairBoarding zoneId id ...F2 } fragment F7 on Pattern { code geometry { lat lon } route { mode color id } stops { lat lon name gtfsId platformCode code id ...F6 } id } " +
-                "fragment F8 on Itinerary { walkDistance duration startTime endTime fares { cents components { cents fareId routes { agency { fareUrl gtfsId name id } gtfsId id } } type } legs { mode from { lat lon name vertexType stop { gtfsId code platformCode zoneId id } } to { lat lon name vertexType stop { gtfsId code platformCode zoneId id } } legGeometry { length points } intermediatePlaces { arrivalTime stop { gtfsId lat lon name code platformCode zoneId id } } realTime transitLeg rentedBike startTime endTime mode distance duration intermediatePlace route { shortName color gtfsId longName agency { gtfsId fareUrl name phone id } id } trip { gtfsId tripHeadsign pattern { code directionId geometry { lat lon } stops { lat lon name gtfsId id } id ...F7 } stoptimes { pickupType stop { gtfsId id } } id } ...F4 } } " +
-                "fragment F9 on Itinerary { walkDistance startTime endTime legs { realTime realtimeState transitLeg startTime endTime mode distance duration rentedBike intermediatePlace intermediatePlaces { stop { zoneId id ...F2 } } route { mode shortName color agency { name id } id ...F3 } trip { pattern { code id } stoptimes { realtimeState stop { gtfsId id } pickupType } id } from { name lat lon stop { gtfsId zoneId id ...F2 } bikeRentalStation { bikesAvailable networks id } } to { stop { gtfsId zoneId id ...F2 } } } } fragment Fa on Itinerary { endTime startTime ...F9 } fragment Fb on Plan { date } " +
-                "fragment Fc on QueryType { _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { transitLeg legGeometry { points } ...F1 } ...F5 ...F8 ...Fa } ...Fb } }"
+        final static String NAME_QUERY_PLAN = "PlanRoute";
+        //final static String QUERY_PLAN = "query Routes( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment Fa on Place{ arrivalTime departureTime name lat lon vertexType stop { lat lon gtfsId code name desc platformCode } } fragment Fc on QueryType{ _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { mode transitLeg startTime endTime distance realTime realtimeState legGeometry { points length } from { ...Fa } to { ...Fa } route { gtfsId shortName longName mode color agency { name } } trip { gtfsId pattern { code } tripHeadsign } intermediatePlaces { ...Fa } } } } } ";
+        final  static String QUERY_PLAN ="query Routes( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment Fa on Place{ arrivalTime departureTime name lat lon vertexType stop { lat lon gtfsId code name desc platformCode } } fragment Fc on QueryType{ _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { mode transitLeg startTime endTime distance realTime realtimeState legGeometry { points length } from { ...Fa } to { ...Fa } route { gtfsId shortName longName mode color agency { name } } trip { gtfsId pattern { code } tripHeadsign stops { name gtfsId lat lon desc } } intermediatePlaces { ...Fa } } } } } "
                 ;
     }
 }
