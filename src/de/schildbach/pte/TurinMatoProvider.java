@@ -102,7 +102,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
         return new Line(routeId,
                 routeId.split(":")[0],
                 product,
-                route.getString("shortName"), STYLES.get(routeId)
+                route.getString("shortName"), new Style(Style.parseColor("#"+route.getString("color")), Style.WHITE)
                 );
     }
     private Location parseStopLocation(JSONObject stopJson) throws JSONException{
