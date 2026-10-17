@@ -161,9 +161,9 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
 
         final Position pos = stopJson.has("platformCode") ? new Position(stopJson.getString("platformCode")) : null;
         return new Stop(location,
-                isUpdated ? null : departureDate, isUpdated? departureDate : null,
-                isUpdated ? null : pos, isUpdated? pos : null, isCanceled,
                 isUpdated ? null : arrivalDate, isUpdated? arrivalDate : null,
+                isUpdated ? null : pos, isUpdated? pos : null, isCanceled,
+                isUpdated ? null : departureDate, isUpdated? departureDate : null,
                 isUpdated ? null : pos, isUpdated? pos : null, isCanceled
                 );
     }
