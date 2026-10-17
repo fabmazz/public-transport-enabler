@@ -37,6 +37,9 @@ import static java.util.Objects.requireNonNull;
 
 public class TurinMatoProvider extends AbstractNetworkProvider{
     private static final String URL="https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
+    private static final String URL_PLAN =  "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
+    protected static final String SERVER_PRODUCT = "efa";
+
 
     private final GraphQLClient graphQLClient;
     private final int MAX_DEPARTURES_DEFAULT = 10;
@@ -54,8 +57,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
             Capability.SUGGEST_LOCATIONS,
             Capability.NEARBY_LOCATIONS,
             Capability.DEPARTURES,
-            Capability.TRIPS,
-            Capability.TRIPS_VIA
+            Capability.TRIPS
+            //Capability.TRIPS_VIA
     );
     @Override
     public final boolean hasCapability(final Capability capability) {
@@ -70,7 +73,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
 
     @Override
     public Set<Product> defaultProducts() {
-        return EnumSet.of(Product.BUS, Product.TRAM, Product.SUBURBAN_TRAIN, Product.SUBWAY);
+        return EnumSet.of(Product.BUS, Product.TRAM, Product.SUBURBAN_TRAIN, Product.CABLECAR, Product.REGIONAL_TRAIN, Product.SUBWAY);
     }
 
 
@@ -220,9 +223,126 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public SuggestLocationsResult suggestLocations(CharSequence constraint, @Nullable Set<LocationType> types, int maxLocations) throws IOException {
         return null;
     }
+    // ------- TRIP UTILS -----
+    private HashMap<String, Object> getDefaultTripArguments(){
+        HashMap<String, Object> args = new HashMap<>();
+        /*
+        An extra penalty added on transfers (i.e. all boardings except the first
+        one). Not to be confused with bikeBoardCost and walkBoardCost, which are the
+        cost of boarding a vehicle with and without a bicycle. The boardCosts are
+        used to model the 'usual' perceived cost of using a transit vehicle, and the
+        transferPenalty is used when a user requests even less transfers.
+        */
+        args.put("transferPenalty", 0);
+        args.put("maxWalkDistance", 3000);
+        args.put("bikeSpeed", 5);
+        args.put("preferred", new HashMap<String, Object>());
+        args.put("locale", "it"); //TODO: check if other locales work well
+        return args;
+    }
+
+    private String getStringForLocation(Location location) {
+
+        StringBuilder sb = new StringBuilder();
+        if(location.name!=null)
+            sb.append(location.name);
+        else if(location.place!=null)
+            sb.append(location.place);
+        //do not append anything else
+        sb.append("::");
+        if(location.coord!=null){
+            sb.append(location.coord.getLatAsDouble());
+            sb.append(",");
+            sb.append(location.coord.getLonAsDouble());
+        }
+        return sb.toString();
+    }
+
+    private Map<String,Object> makeTripArguments(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options){
+        //first, get time and day
+        final String dayStr = formatLocalDate(date);
+        final String timeStr = formatLocalTime(date);
+
+        final Map<String,Object> args = getDefaultTripArguments();
+        args.put("date", dayStr);
+        args.put("time", timeStr);
+        args.put("fromPlace", getStringForLocation(from));
+        args.put("toPlace", getStringForLocation(to));
+        args.put("arriveBy", !dep);
+
+        //intermediate location
+        final ArrayList<HashMap<String,Double>> intermediateLocs = new ArrayList<>();
+        if(via!=null){
+            final HashMap<String,Double> map = new HashMap<>();
+            map.put("lat", via.getLatAsDouble());
+            map.put("lon", via.getLonAsDouble());
+            intermediateLocs.add(map);
+        }
+        args.put("intermediatePlaces",intermediateLocs);
+
+        args.put("numItineraries", 5);
+        final int DEFAULT_TRANSFER_TIME = 120;
+
+        if(options == null){
+            //Set default
+            args.put("walkBoardCost", 600); // cost in seconds
+            args.put("minTransferTime", DEFAULT_TRANSFER_TIME); //in seconds
+            args.put("walkReluctance", 1);
+            args.put("walkSpeed", 1.2);
+            args.put("accessible", false);
+        } else{
+            double walkSpeed = 1.2;
+
+            if(options.walkSpeed!=null) switch (options.walkSpeed) {
+                case FAST:
+                    walkSpeed = 1.5; //circa 5.5 km/h
+                    break;
+                case SLOW:
+                    walkSpeed = 0.83;
+                    break;
+                case NORMAL: //nothing to do
+            }
+            args.put("walkSpeed", walkSpeed);
+
+            int walkBoardCost = 600;
+            int minTransferTime = DEFAULT_TRANSFER_TIME;
+            int walkReluctance = 1;
+            if(options.optimize!=null) switch (options.optimize) {
+                case LEAST_CHANGES:
+                    walkBoardCost = 3600;
+                    break;
+                case LEAST_WALKING:
+                    walkReluctance = 5;
+                    break;
+                case LEAST_DURATION:
+                    minTransferTime = 40;
+            }
+            args.put("walkBoardCost", walkBoardCost);
+            args.put("minTransferTime", minTransferTime);
+            args.put("walkReluctance", walkReluctance);
+
+            args.put( "accessible",
+                    (options.accessibility!=null && options.accessibility.equals(Accessibility.BARRIER_FREE)));
+
+        }
+        return args;
+    }
 
     @Override
     public QueryTripsResult queryTrips(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) throws IOException {
+        final ResultHeader resultHeader = new ResultHeader(network,SERVER_PRODUCT);
+
+        if(from==null || !from.hasCoord()){
+            return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_FROM);
+        } else if(to==null || !to.hasCoord()){
+            return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_TO);
+        }
+        if(via!=null && !via.hasCoord())
+            return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_VIA);
+
+        final Map<String, Object> variables = makeTripArguments(from,via,to,date,dep,options);
+
+
         return null;
     }
 
