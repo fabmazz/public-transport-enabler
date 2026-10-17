@@ -28,6 +28,8 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import static de.schildbach.pte.util.Preconditions.checkArgument;
@@ -41,6 +43,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public TurinMatoProvider() {
         super(NetworkId.MATO);
         setStyles(STYLES);
+        setTimeZone("Europe/Rome");
         setRequestUrlEncoding(StandardCharsets.UTF_8);
         setNumTripsRequested(6);
         httpClient.setHeader("Host", "mapi.5t.torino.it");
@@ -227,7 +230,15 @@ public class TurinMatoProvider extends AbstractNetworkProvider{
     public QueryTripsResult queryMoreTrips(QueryTripsContext context, boolean later) throws IOException {
         return null;
     }
-    // ------ GraphQL Queries -----
+    // -- dates util
+    private static final ZoneId ITALY = ZoneId.of("Europe/Rome");
+
+    public static String formatLocalDate(Date time) {
+        return time.toInstant().atZone(ITALY).toLocalDate().format(DateTimeFormatter.ISO_LOCAL_DATE);
+    }
+    public static String formatLocalTime(Date time) {
+        return time.toInstant().atZone(ITALY).toLocalTime().format(DateTimeFormatter.ISO_LOCAL_TIME);
+    }
 
     // ----- STYLES STUFF -----
     private static final Map<String, Style> STYLES = new HashMap<>();
