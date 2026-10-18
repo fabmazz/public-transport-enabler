@@ -357,16 +357,17 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
             args.put("walkSpeed", walkSpeed);
             int walkBoardCost = 600; // in seconds
             int minTransferTime = DEFAULT_TRANSFER_TIME; // in seconds
-            int walkReluctance = 1;
+            int walkReluctance = 2;
             if (context.options.optimize != null) switch (context.options.optimize) {
                 case LEAST_CHANGES:
                     walkBoardCost = 3600;
                     break;
                 case LEAST_WALKING:
-                    walkReluctance = 3;  //5 is maximum, 1 is minimum
+                    walkReluctance = 5;  //5 is maximum, 1 is minimum
+                    walkBoardCost = 360;
                     break;
                 case LEAST_DURATION:
-                    minTransferTime = 40;
+                    minTransferTime = 60;
             }
             args.put("walkBoardCost", walkBoardCost);
             args.put("minTransferTime", minTransferTime);
