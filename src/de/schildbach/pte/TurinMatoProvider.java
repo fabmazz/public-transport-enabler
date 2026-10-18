@@ -45,6 +45,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
     private final GraphQLClient graphQLClient;
     private final int MAX_DEPARTURES_DEFAULT = 10;
 
+    private ResultHeader getResultHeader() {return new ResultHeader(network, SERVER_PRODUCT);}
+
     public TurinMatoProvider() {
         super(NetworkId.MATO);
         setStyles(STYLES);
@@ -307,43 +309,43 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         return sb.toString();
     }
 
-    private Map<String, Object> makeTripArguments(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) {
+    private Map<String, Object> makeTripArguments(TripsQueryContext context) {
         //first, get time and day
-        final String dayStr = formatLocalDate(date);
-        final String timeStr = formatLocalTime(date);
+        final String dayStr = formatLocalDate(context.date);
+        final String timeStr = formatLocalTime(context.date);
 
         final Map<String, Object> args = getDefaultTripArguments();
         args.put("date", dayStr);
         args.put("time", timeStr);
-        args.put("fromPlace", getStringForLocation(from));
-        args.put("toPlace", getStringForLocation(to));
-        args.put("arriveBy", !dep);
+        args.put("fromPlace", getStringForLocation(context.from));
+        args.put("toPlace", getStringForLocation(context.to));
+        args.put("arriveBy", !context.isDateDep);
 
         //intermediate location
         final ArrayList<HashMap<String, Double>> intermediateLocs = new ArrayList<>();
-        if (via != null) {
+        if (context.via != null) {
             final HashMap<String, Double> map = new HashMap<>();
-            map.put("lat", via.getLatAsDouble());
-            map.put("lon", via.getLonAsDouble());
+            map.put("lat", context.via.getLatAsDouble());
+            map.put("lon", context.via.getLonAsDouble());
             intermediateLocs.add(map);
         }
         args.put("intermediatePlaces", intermediateLocs);
 
-        args.put("numItineraries", 5);
+        args.put("numItineraries", context.numItineraries);
         final int DEFAULT_TRANSFER_TIME = 120;
         //TODO: move this with options -> Product
         args.put("modes", "BUS,TRAM,SUBWAY,RAIL,WALK");
 
-        if (options == null) {
+        if (context.options == null) {
             //Set default
             args.put("walkBoardCost", 600); // cost in seconds
             args.put("minTransferTime", DEFAULT_TRANSFER_TIME); //in seconds
-            args.put("walkReluctance", 1);
+            args.put("walkReluctance", 2); // Normale in Mato
             args.put("walkSpeed", 1.2);
             args.put("accessible", false);
         } else {
             double walkSpeed = 1.2;
-            if (options.walkSpeed != null) switch (options.walkSpeed) {
+            if (context.options.walkSpeed != null) switch (context.options.walkSpeed) {
                 case FAST:
                     walkSpeed = 1.5; //circa 5.5 km/h
                     break;
@@ -353,15 +355,15 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                 case NORMAL: //nothing to do
             }
             args.put("walkSpeed", walkSpeed);
-            int walkBoardCost = 600;
-            int minTransferTime = DEFAULT_TRANSFER_TIME;
+            int walkBoardCost = 600; // in seconds
+            int minTransferTime = DEFAULT_TRANSFER_TIME; // in seconds
             int walkReluctance = 1;
-            if (options.optimize != null) switch (options.optimize) {
+            if (context.options.optimize != null) switch (context.options.optimize) {
                 case LEAST_CHANGES:
                     walkBoardCost = 3600;
                     break;
                 case LEAST_WALKING:
-                    walkReluctance = 5;
+                    walkReluctance = 3;  //5 is maximum, 1 is minimum
                     break;
                 case LEAST_DURATION:
                     minTransferTime = 40;
@@ -370,7 +372,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
             args.put("minTransferTime", minTransferTime);
             args.put("walkReluctance", walkReluctance);
             args.put("accessible",
-                    (options.accessibility != null && options.accessibility.equals(Accessibility.BARRIER_FREE)));
+                    (context.options.accessibility != null && context.options.accessibility.equals(Accessibility.BARRIER_FREE)));
 
         }
 
@@ -378,26 +380,27 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         return args;
     }
 
-    @Override
-    public QueryTripsResult queryTrips(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) throws IOException {
-        final ResultHeader resultHeader = new ResultHeader(network, SERVER_PRODUCT);
+    private QueryTripsResult makeTripRequest(TripsQueryContext tripsContext) throws IOException {
+        final Location from = tripsContext.from;
+        final Location to = tripsContext.to;
+        final ResultHeader resultHeader = getResultHeader();
 
         if (from == null || !from.hasCoord()) {
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_FROM);
         } else if (to == null || !to.hasCoord()) {
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_TO);
         }
-        if (via != null && !via.hasCoord())
+        if (tripsContext.via != null && !tripsContext.via.hasCoord())
             return new QueryTripsResult(resultHeader, QueryTripsResult.Status.UNKNOWN_VIA);
 
-        final Map<String, Object> variables = makeTripArguments(from, via, to, date, dep, options);
+        final Map<String, Object> variables = makeTripArguments(tripsContext);
 
         httpClient.setHeader("Origin", "https://mato.muoversiatorino.it");
         httpClient.setHeader("Referer", "https://mato.muoversiatorino.it/");
         httpClient.setHeader("Content-Type", "application/json");
 
         String idquery = "from_"+from.uniqueShortName()+"_to_"+to.uniqueShortName()+"_date_"+
-                formatLocalDate(date)+"T"+formatLocalTime(date);
+                formatLocalDate(tripsContext.date)+"T"+formatLocalTime(tripsContext.date);
         //setUserAgent("Dalvik/2.1.0 (Linux; U; Android 15)");
         final JSONObject response = graphQLClient.makeRequest(URL_PLAN, Queries.NAME_QUERY_PLAN, variables, Queries.QUERY_PLAN);
         final ArrayList<Trip> trips = new ArrayList<>();
@@ -435,7 +438,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                                 dest, parseMatoPlaceIntoStop(posFromJ, isRealtime, isCancelled),
                                 parseMatoPlaceIntoStop(posToJ, isRealtime, isCancelled),
                                 intermediateStops, points, null
-                                );
+                        );
                         // `message` should not be empty, but the MaTO endpoint does not provide alerts
                         nMezzi++;
                     } else{
@@ -457,19 +460,19 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                                 parseMatoPlaceIntoLocation(posToJ),
                                 Date.from(Instant.ofEpochMilli(legJ.getLong("endTime"))),
                                 points, (int) legJ.getDouble("distance")
-                                );
+                        );
                     }
                     legs.add(leg);
 
                 }
 
                 trips.add(new Trip(idquery+"-"+i,
-                        legs.get(0).departure, legs.get(legs.size()-1).arrival, legs, null, null, nMezzi-1
+                                legs.get(0).departure, legs.get(legs.size()-1).arrival, legs, null, null, nMezzi-1
                         )
                 );
             }
 
-            return new QueryTripsResult(resultHeader, null, from, via, to, null, trips);
+            return new QueryTripsResult(resultHeader, null, from, tripsContext.via, to, tripsContext, trips);
 
         } catch (JSONException e) {
             throw new IOException("Could not parse JSON of response", e);
@@ -477,8 +480,22 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
     }
 
     @Override
+    public QueryTripsResult queryTrips(Location from, @Nullable Location via, Location to, Date date, boolean dep, @Nullable TripOptions options) throws IOException {
+        final TripsQueryContext tripsContext = new TripsQueryContext(from, via, to, date, dep, options, 5);
+
+        return makeTripRequest(tripsContext);
+    }
+
+    @Override
     public QueryTripsResult queryMoreTrips(QueryTripsContext context, boolean later) throws IOException {
-        return null;
+        final ResultHeader header = getResultHeader();
+        if(context instanceof TripsQueryContext && (context.canQueryEarlier() || context.canQueryLater())  )
+        {
+
+            final TripsQueryContext tripsContext = ((TripsQueryContext) context);
+            return makeTripRequest(tripsContext.newWithItineraries(tripsContext.numItineraries+2));
+        } else
+            return new QueryTripsResult(header, QueryTripsResult.Status.NO_TRIPS);
     }
 
     // -- dates util
@@ -706,6 +723,40 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         addStyle("gtt:4512E", "#0080ff");
         addStyle("gtt:W15U", "#ff9900");
         addStyle("gtt:6U", "#ff9900");
+    }
+    final static class TripsQueryContext implements QueryTripsContext {
+
+        final Location from;
+        final Location to;
+        final @Nullable Location via;
+        final Date date;
+        final boolean isDateDep;
+        final @Nullable TripOptions options;
+
+        final int numItineraries;
+
+        public TripsQueryContext(Location from, @Nullable Location via, Location to, Date date, boolean isDateDep, @Nullable TripOptions options, int numItineraries) {
+            this.from = from;
+            this.to = to;
+            this.via = via;
+            this.date = date;
+            this.isDateDep = isDateDep;
+            this.options = options;
+            this.numItineraries = numItineraries;
+        }
+
+        public TripsQueryContext newWithItineraries(int numItineraries){
+            return new TripsQueryContext(from, to, via, date, isDateDep, options, numItineraries);
+        }
+        @Override
+        public boolean canQueryLater() {
+            return isDateDep;
+        }
+
+        @Override
+        public boolean canQueryEarlier() {
+            return !isDateDep;
+        }
     }
 
     final static class Queries {

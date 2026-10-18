@@ -1,5 +1,6 @@
 package de.schildbach.pte.live;
 
+import com.sun.org.apache.xerces.internal.util.Status;
 import de.schildbach.pte.TurinMatoProvider;
 import de.schildbach.pte.dto.*;
 import org.junit.Test;
@@ -9,6 +10,7 @@ import java.time.Instant;
 import java.util.Date;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class MatoProviderLiveTest extends AbstractProviderLiveTest {
     public MatoProviderLiveTest() {
@@ -40,15 +42,22 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
 
     @Test
     public void testTripResponse() throws IOException {
-        final Location from = new Location(LocationType.ADDRESS, "idisa",Point.fromDouble(45.0381828, 7.6671760),
-                "Torino","Corso Spezia 7, Torino"
+        final Location from = new Location(LocationType.ADDRESS, "asdadaa",Point.fromDouble(45.08067,7.70060),
+                "Torino","Corso Novara 115, Torino"
                 );
-        final Location to = new Location(LocationType.POI, "myid",Point.fromDouble(45.096813,7.699549),
-                "Torino","Ospedale Giovanni Bosco, Torino"
+        final Location to = new Location(LocationType.ADDRESS, "udbahsbsaajhs",Point.fromDouble(45.04556,7.67026),
+                "Torino","Via Antonio Muratori 13, Torino"
         );
+        assertTrue(to.hasCoord());
+        assertTrue(from.hasCoord());
         final QueryTripsResult result = provider.queryTrips(from,null, to,
-                Date.from(Instant.now()),true, null
+                //Date.from(Instant.ofEpochSecond(1792483200)),
+                Date.from(Instant.now()),
+                true, null
         );
+        System.out.println("Results of the query: "+result.status);
+        assertTrue(result.status == QueryTripsResult.Status.OK);
+        print(result);
 
     }
 }
