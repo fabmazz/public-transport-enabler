@@ -39,7 +39,7 @@ import static de.schildbach.pte.LocationUtils.computeDistance;
 import static de.schildbach.pte.util.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
-public class TurinMatoProvider extends AbstractNetworkProvider {
+public class MatoProvider extends AbstractNetworkProvider {
     private static final String URL_REQ = "https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
     private static final String URL_PLAN = "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
 
@@ -52,7 +52,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
 
     private ResultHeader getResultHeader() {return new ResultHeader(network, SERVER_PRODUCT);}
 
-    public TurinMatoProvider() {
+    public MatoProvider() {
         super(NetworkId.MATO);
         setStyles(STYLES);
         setTimeZone("Europe/Rome");

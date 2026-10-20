@@ -1,7 +1,6 @@
 package de.schildbach.pte.live;
 
-import com.sun.org.apache.xerces.internal.util.Status;
-import de.schildbach.pte.TurinMatoProvider;
+import de.schildbach.pte.MatoProvider;
 import de.schildbach.pte.dto.*;
 import org.junit.Test;
 
@@ -14,7 +13,7 @@ import static org.junit.Assert.*;
 
 public class MatoProviderLiveTest extends AbstractProviderLiveTest {
     public MatoProviderLiveTest() {
-        super(new TurinMatoProvider());
+        super(new MatoProvider());
     }
 
     @Test
@@ -35,9 +34,9 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
     public void testDate(){
         final Date date = Date.from(Instant.ofEpochMilli(1792057500000L));
 
-        assertEquals("2026-10-15", TurinMatoProvider.formatLocalDate(date));
+        assertEquals("2026-10-15", MatoProvider.formatLocalDate(date));
 
-        assertEquals("11:45:00", TurinMatoProvider.formatLocalTime(date));
+        assertEquals("11:45:00", MatoProvider.formatLocalTime(date));
     }
 
     @Test
