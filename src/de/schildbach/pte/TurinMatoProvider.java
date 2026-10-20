@@ -120,8 +120,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
             //throw new IllegalArgumentException("Need to have STATION in the types to query");
         }
         final HashMap<String, Object> vars = new HashMap<>();
-        vars.put("lat", location.coord.getLatAsDouble());
-        vars.put("lon", location.coord.getLonAsDouble());
+        vars.put("lat", location.getLatAsDouble());
+        vars.put("lon", location.getLonAsDouble());
         vars.put("radius", maxDistance);
 
         JSONObject res;
