@@ -183,13 +183,13 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                 if (Objects.equals(props.getString("layer"), "venue")){
                     type = LocationType.POI;
                 }
-                if(props.has("addendum")){
+                /*if(props.has("addendum")){
                     JSONObject x = props.getJSONObject("addendum").optJSONObject("osm");
                     if (x!=null){
                         if(x.optString("operator","").toLowerCase(Locale.ROOT).equals("gruppo torinese trasporti"))
                             type = LocationType.STATION;
                     }
-                }
+                }*/
                 suggestedLocations.add(new SuggestedLocation(
                         new Location(type, props.optString("id",""),
                                 gpsLoc,
