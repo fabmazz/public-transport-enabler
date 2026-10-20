@@ -8,9 +8,9 @@ import org.junit.Test;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Date;
+import java.util.EnumSet;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class MatoProviderLiveTest extends AbstractProviderLiveTest {
     public MatoProviderLiveTest() {
@@ -56,7 +56,7 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
                 true, null
         );
         System.out.println("Results of the query: "+result.status);
-        assertTrue(result.status == QueryTripsResult.Status.OK);
+        assertSame(QueryTripsResult.Status.OK, result.status);
         print(result);
 
     }
@@ -66,5 +66,17 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
         final SuggestLocationsResult res = provider.suggestLocations("castello",null, 10);
 
         print(res);
+    }
+
+    @Test
+    public void testFindStops() throws IOException{
+        final NearbyLocationsResult result = provider.queryNearbyLocations(EnumSet.of(LocationType.STATION),
+                Location.coord(Point.fromDouble(45.0381828,7.6671760)),
+                500, 10
+                );
+
+        print(result);
+        assertNotNull(result.locations);
+        assertEquals(8, result.locations.size());
     }
 }

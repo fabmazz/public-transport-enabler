@@ -35,6 +35,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static de.schildbach.pte.LocationUtils.computeDistance;
 import static de.schildbach.pte.util.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -85,10 +86,74 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         return EnumSet.of(Product.BUS, Product.TRAM, Product.SUBURBAN_TRAIN, Product.CABLECAR, Product.REGIONAL_TRAIN, Product.SUBWAY);
     }
 
+    @Nullable
+    Product getProductFromString(String name){
+        switch (name){
+            case "BUS":
+                return Product.BUS;
+            case "TRAM":
+                return Product.TRAM;
+            case "SUBWAY":
+                return Product.SUBWAY;
+            case "RAIL":
+                return Product.REGIONAL_TRAIN;
+            case "FUNICULAR":
+            case "CABLE_CAR":
+                return Product.CABLECAR;
+            case "FERRY":
+                return Product.FERRY;
+            case "AIRPLANE":
+        }
+        return null;
+    }
 
     @Override
     public NearbyLocationsResult queryNearbyLocations(Set<LocationType> types, Location location, int maxDistance, int maxLocations) throws IOException {
-        return null;
+        final ResultHeader resHeader = new ResultHeader(network, SERVER_PRODUCT);
+        if(!location.hasCoord()){
+            return new NearbyLocationsResult(resHeader, NearbyLocationsResult.Status.INVALID_ID);
+        }
+        final ArrayList<Location> foundLocations = new ArrayList<>();
+        if(!types.contains(LocationType.STATION)){
+            //return empty -- we can only get stops so far
+            return new NearbyLocationsResult(resHeader,foundLocations);
+            //throw new IllegalArgumentException("Need to have STATION in the types to query");
+        }
+        final HashMap<String, Object> vars = new HashMap<>();
+        vars.put("lat", location.coord.getLatAsDouble());
+        vars.put("lon", location.coord.getLonAsDouble());
+        vars.put("radius", maxDistance);
+
+        JSONObject res;
+        //try {
+            res = graphQLClient.makeRequest(URL_REQ, "nearbyStops", vars,Queries.QUERY_NEARBY);
+        //} catch (IOException e) {
+        //    throw new RuntimeException(e);
+        //}
+        try{
+            //["data"]["viewer"]["stopsByRadius"]["edges"]
+            JSONArray stopsDists = res.getJSONObject("data")
+                    .getJSONObject("viewer")
+                    .getJSONObject("stopsByRadius").getJSONArray("edges");
+
+            for(int i=0; i<stopsDists.length(); ++i){
+                JSONObject elm = stopsDists.getJSONObject(i);
+                if(elm == null)
+                    continue;
+                elm = elm.getJSONObject("node");
+                if(elm == null) continue;
+                int distance = elm.getInt("distance");
+                JSONObject stop = elm.getJSONObject("stop");
+                foundLocations.add(parseMatoStopIntoLocation(stop));
+            }
+        } catch (JSONException e){
+            throw new ParserException("Failed to parse nearby stops information", e);
+        }
+        //This cannot throw null (both `location` and all the stops found have coords)
+        foundLocations.sort((l1, l2) ->
+                (int) ((computeDistance(location.coord, l1.coord) - computeDistance(location.coord, l2.coord)) * 10));
+
+        return new NearbyLocationsResult(resHeader,foundLocations.subList(0, Math.min(foundLocations.size(), maxLocations)));
     }
 
 
@@ -187,11 +252,23 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
     }
 
     private Location parseMatoStopIntoLocation(JSONObject stopJson) throws JSONException {
+        Set<Product> products = null;
+        if(stopJson.has("routes")){
+            JSONArray rs = stopJson.getJSONArray("routes");
+            products = new HashSet<>();
+            for(int j=0; j<rs.length(); j++){
+                JSONObject route = rs.getJSONObject(j);
+                String mode = route.optString("mode");
+                Product prod = mode != null ? getProductFromString(mode) : null;
+                if(prod!=null)
+                    products.add(prod);
+            }
+        }
         return new Location(LocationType.STATION,
                 stopJson.getString("gtfsId"),
                 Point.fromDouble(stopJson.getDouble("lat"), stopJson.getDouble("lon")),
                 stopJson.getString("desc"),
-                stopJson.getString("name")
+                stopJson.getString("name"), products
         );
     }
     private Location parseMatoPlaceIntoLocation(JSONObject placeJson) throws  JSONException {
@@ -821,5 +898,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         //final static String QUERY_PLAN = "query Routes( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment Fa on Place{ arrivalTime departureTime name lat lon vertexType stop { lat lon gtfsId code name desc platformCode } } fragment Fc on QueryType{ _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { mode transitLeg startTime endTime distance realTime realtimeState legGeometry { points length } from { ...Fa } to { ...Fa } route { gtfsId shortName longName mode color agency { name } } trip { gtfsId pattern { code } tripHeadsign } intermediatePlaces { ...Fa } } } } } ";
         final  static String QUERY_PLAN ="query PlanRoute( $fromPlace: String $toPlace: String $date: String $time: String $locale: String $modes: String $arriveBy: Boolean $accessible: Boolean $intermediatePlaces: [InputCoordinates]! $numItineraries: Int! $walkBoardCost: Int! $minTransferTime: Int! $transferPenalty: Int! $walkReluctance: Float! $walkSpeed: Float! $maxWalkDistance: Float! $bikeSpeed: Float! $preferred: InputPreferred! ) { viewer { ...Fc } } fragment Fa on Place{ name lat lon vertexType stop { lat lon gtfsId code name desc platformCode } } fragment Fc on QueryType{ _planMyRoute: plan( fromPlace: $fromPlace toPlace: $toPlace intermediatePlaces: $intermediatePlaces numItineraries: $numItineraries modes: $modes date: $date time: $time walkReluctance: $walkReluctance walkBoardCost: $walkBoardCost minTransferTime: $minTransferTime walkSpeed: $walkSpeed maxWalkDistance: $maxWalkDistance wheelchair: $accessible arriveBy: $arriveBy transferPenalty: $transferPenalty bikeSpeed: $bikeSpeed optimize: QUICK itineraryFiltering: 1.5 preferred: $preferred locale: $locale ) { itineraries { startTime endTime legs { mode transitLeg startTime endTime distance realTime realtimeState legGeometry { points length } from { ...Fa departureTime } to { ...Fa arrivalTime } route { gtfsId shortName longName mode color agency { name } } trip { gtfsId pattern { code } tripHeadsign stops { name gtfsId lat lon desc } } intermediatePlaces { arrivalTime departureTime ...Fa } } } } } "
                 ;
+
+        final static String QUERY_NEARBY="query nearbyStops( $lat: Float! $lon: Float! $radius: Int! ) { viewer{ stopsByRadius(lat: $lat, lon: $lon, radius: $radius, ){ edges { node{ stop{ id name lat lon direction code desc gtfsId routes { gtfsId mode } } distance } } } } }";
     }
 }
