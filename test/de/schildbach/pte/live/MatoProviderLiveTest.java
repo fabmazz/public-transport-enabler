@@ -60,4 +60,11 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
         print(result);
 
     }
+
+    @Test
+    public void testSuggestionsPlaces() throws IOException{
+        final SuggestLocationsResult res = provider.suggestLocations("castello",null, 10);
+
+        print(res);
+    }
 }

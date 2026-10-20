@@ -21,6 +21,7 @@ import de.schildbach.pte.dto.*;
 import de.schildbach.pte.exception.ParserException;
 import de.schildbach.pte.util.GraphQLClient;
 import de.schildbach.pte.util.PolylineFormat;
+import okhttp3.HttpUrl;
 import org.jetbrains.annotations.Nullable;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -32,13 +33,16 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static de.schildbach.pte.util.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 public class TurinMatoProvider extends AbstractNetworkProvider {
-    private static final String URL = "https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
+    private static final String URL_REQ = "https://mapi.5t.torino.it/routing/v1/routers/mat/index/graphql";
     private static final String URL_PLAN = "https://plan.muoversiatorino.it/otp/routers/mato/index/graphql";
+
+    private static final String URL_GEOCODING ="https://geocode.muoversinpiemonte.it/v1/autocomplete";
     protected static final String SERVER_PRODUCT = "mato";
 
 
@@ -61,8 +65,8 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
             Capability.SUGGEST_LOCATIONS,
             Capability.NEARBY_LOCATIONS,
             Capability.DEPARTURES,
-            Capability.TRIPS
-            //Capability.TRIPS_VIA
+            Capability.TRIPS,
+            Capability.TRIPS_VIA
     );
 
     @Override
@@ -85,6 +89,63 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
     @Override
     public NearbyLocationsResult queryNearbyLocations(Set<LocationType> types, Location location, int maxDistance, int maxLocations) throws IOException {
         return null;
+    }
+
+
+    @Override
+    public SuggestLocationsResult suggestLocations(CharSequence constraint, @Nullable Set<LocationType> types, int maxLocations) throws IOException {
+        final ResultHeader resHeader = new ResultHeader(network, "autocomplete");
+
+        HttpUrl url = requireNonNull(HttpUrl.parse(URL_GEOCODING)).newBuilder()
+                .addQueryParameter("text", constraint.toString())
+                .addQueryParameter("lang", "it").build();
+
+        String resu = httpClient.get(url).toString();
+        try{
+            JSONObject queryRes = new JSONObject(resu);
+            JSONArray feat = queryRes.getJSONArray("features");
+            List<SuggestedLocation> suggestedLocations = new ArrayList<>();
+            for(int i=0; i<feat.length(); ++i) {
+                JSONObject feature = feat.getJSONObject(i);
+                //only get Feature geojson
+                if(!feature.getString("type").equals("Feature"))
+                    continue;
+                JSONArray coords = feature.getJSONObject("geometry").getJSONArray("coordinates");
+                Point gpsLoc = Point.fromDouble(coords.getDouble(0),coords.getDouble(1) );
+
+                JSONObject props = feature.getJSONObject("properties");
+                LocationType type = LocationType.ADDRESS;
+                if (Objects.equals(props.getString("layer"), "venue")){
+                    type = LocationType.POI;
+                }
+                if(props.has("addendum")){
+                    JSONObject x = props.getJSONObject("addendum").optJSONObject("osm");
+                    if (x!=null){
+                        if(x.optString("operator","").toLowerCase(Locale.ROOT).equals("gruppo torinese trasporti"))
+                            type = LocationType.STATION;
+                    }
+                }
+                suggestedLocations.add(new SuggestedLocation(
+                        new Location(type, props.optString("id",""),
+                                gpsLoc,
+                                props.optString("locality",""),
+                                props.getString("label")
+
+                        ))
+                );
+            }
+            if(types!=null){
+                suggestedLocations = suggestedLocations.stream().filter(
+                        sL -> types.contains(sL.location.type)
+                ).collect(Collectors.toList());
+            }
+
+
+            return new SuggestLocationsResult(resHeader, suggestedLocations.subList(0, Math.min(suggestedLocations.size(), maxLocations)));
+
+        } catch (JSONException e) {
+            throw new ParserException("Cannot parse query response",e);
+        }
     }
 
     /**
@@ -191,7 +252,7 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
             else numDep = maxDepartures;
             args.put("numberOfDepartures", numDep);
 
-            JSONObject requestResult = graphQLClient.makeRequest(URL, "StopArrivals", args, Queries.QUERY_ARRIVALS);
+            JSONObject requestResult = graphQLClient.makeRequest(URL_REQ, "StopArrivals", args, Queries.QUERY_ARRIVALS);
             currentObject = requestResult;
 
             if (GraphQLClient.countErrors(requestResult) > 0) {
@@ -267,11 +328,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
         }
 
         return departuresResult;
-    }
-
-    @Override
-    public SuggestLocationsResult suggestLocations(CharSequence constraint, @Nullable Set<LocationType> types, int maxLocations) throws IOException {
-        return null;
     }
 
     // ------- TRIP UTILS -----
@@ -402,7 +458,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
 
         String idquery = "from_"+from.uniqueShortName()+"_to_"+to.uniqueShortName()+"_date_"+
                 formatLocalDate(tripsContext.date)+"T"+formatLocalTime(tripsContext.date);
-        //setUserAgent("Dalvik/2.1.0 (Linux; U; Android 15)");
         final JSONObject response = graphQLClient.makeRequest(URL_PLAN, Queries.NAME_QUERY_PLAN, variables, Queries.QUERY_PLAN);
         final ArrayList<Trip> trips = new ArrayList<>();
         try {
@@ -413,7 +468,6 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                 final ArrayList<Trip.Leg> legs = new ArrayList<>();
                 final JSONArray legsJson = itin.getJSONArray("legs");
                 int nMezzi = 0;
-
 
                 for (int j = 0; j < legsJson.length(); j++) {
                     //each leg
@@ -464,17 +518,13 @@ public class TurinMatoProvider extends AbstractNetworkProvider {
                         );
                     }
                     legs.add(leg);
-
                 }
-
                 trips.add(new Trip(idquery+"-"+i,
                                 legs.get(0).departure, legs.get(legs.size()-1).arrival, legs, null, null, nMezzi-1
                         )
                 );
             }
-
             return new QueryTripsResult(resultHeader, null, from, tripsContext.via, to, tripsContext, trips);
-
         } catch (JSONException e) {
             throw new IOException("Could not parse JSON of response", e);
         }
