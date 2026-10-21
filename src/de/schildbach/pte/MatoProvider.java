@@ -204,9 +204,10 @@ public class MatoProvider extends AbstractNetworkProvider {
                         sL -> types.contains(sL.location.type)
                 ).collect(Collectors.toList());
             }
+            if(maxLocations > 0)
+                suggestedLocations = suggestedLocations.subList(0, Math.min(suggestedLocations.size(), maxLocations));
 
-
-            return new SuggestLocationsResult(resHeader, suggestedLocations.subList(0, Math.min(suggestedLocations.size(), maxLocations)));
+            return new SuggestLocationsResult(resHeader, suggestedLocations);
 
         } catch (JSONException e) {
             throw new ParserException("Cannot parse query response",e);
