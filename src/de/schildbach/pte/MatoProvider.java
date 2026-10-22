@@ -153,7 +153,9 @@ public class MatoProvider extends AbstractNetworkProvider {
         foundLocations.sort((l1, l2) ->
                 (int) ((computeDistance(location.coord, l1.coord) - computeDistance(location.coord, l2.coord)) * 10));
 
-        return new NearbyLocationsResult(resHeader,foundLocations.subList(0, Math.min(foundLocations.size(), maxLocations)));
+        return new NearbyLocationsResult(resHeader,
+                maxLocations>0 ? foundLocations.subList(0, Math.min(foundLocations.size(), maxLocations)) : foundLocations
+                );
     }
 
 
