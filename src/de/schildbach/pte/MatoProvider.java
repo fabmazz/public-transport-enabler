@@ -178,7 +178,7 @@ public class MatoProvider extends AbstractNetworkProvider {
                 if(!feature.getString("type").equals("Feature"))
                     continue;
                 JSONArray coords = feature.getJSONObject("geometry").getJSONArray("coordinates");
-                Point gpsLoc = Point.fromDouble(coords.getDouble(0),coords.getDouble(1) );
+                Point gpsLoc = Point.fromDouble(coords.getDouble(1),coords.getDouble(0) );
 
                 JSONObject props = feature.getJSONObject("properties");
                 LocationType type = LocationType.ADDRESS;
