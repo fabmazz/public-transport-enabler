@@ -285,6 +285,7 @@ public class MatoProvider extends AbstractNetworkProvider {
         //stop has departure time and arrival time
         final JSONObject stopJson = placeJson.optJSONObject("stop");
         final Location location;
+        Position pos = null;
         if (stopJson == null){
             location = new Location(LocationType.ADDRESS, null,
                     Point.fromDouble(placeJson.getDouble("lat"), placeJson.getDouble("lon")), null,
@@ -293,6 +294,9 @@ public class MatoProvider extends AbstractNetworkProvider {
                     //Location.coord(Point.fromDouble(placeJson.getDouble("lat"), placeJson.getDouble("lon")));
         } else {
              location = parseMatoStopIntoLocation(stopJson);
+             if (!Objects.equals(stopJson.optString("platformCode", "null"), "null")){
+                 pos = new Position(stopJson.getString("platformCode"));
+             }
         }
         final Date departureDate, arrivalDate;
         if(placeJson.has("departureTime"))
@@ -302,7 +306,6 @@ public class MatoProvider extends AbstractNetworkProvider {
             arrivalDate = Date.from(Instant.ofEpochMilli(placeJson.getLong("arrivalTime")));
         else arrivalDate = null;
 
-        final Position pos = stopJson.has("platformCode") ? new Position(stopJson.getString("platformCode")) : null;
         return new Stop(location,
                 isUpdated ? null : arrivalDate, isUpdated? arrivalDate : null,
                 isUpdated ? null : pos, isUpdated? pos : null, isCanceled,

@@ -57,6 +57,23 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
         System.out.println("Results of the query: "+result.status);
         assertSame(QueryTripsResult.Status.OK, result.status);
         print(result);
+        for (Trip tr: result.trips) {
+            System.out.println(tr);
+            for (Trip.Leg l : tr.legs) {
+                System.out.println("Leg: "+ l.getClass());
+                if (l instanceof Trip.Public) {
+                    Trip.Public leg = (Trip.Public) l;
+
+                    System.out.println("Departure position, planned: "+leg.departureStop.plannedDeparturePosition+
+                            ", predicted: "+leg.departureStop.predictedDeparturePosition);
+                    if(leg.getDeparturePosition()!=null){
+                        assertNotEquals("null",leg.getDeparturePosition().toString());
+                    }
+                }
+            }
+        }
+
+
 
     }
 
