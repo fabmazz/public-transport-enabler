@@ -142,7 +142,7 @@ public class MatoProvider extends AbstractNetworkProvider {
                     continue;
                 elm = elm.getJSONObject("node");
                 if(elm == null) continue;
-                int distance = elm.getInt("distance");
+                //int distance = elm.getInt("distance");
                 JSONObject stop = elm.getJSONObject("stop");
                 foundLocations.add(parseMatoStopIntoLocation(stop));
             }
@@ -880,7 +880,7 @@ public class MatoProvider extends AbstractNetworkProvider {
         }
 
         public TripsQueryContext newWithItineraries(int numItineraries){
-            return new TripsQueryContext(from, to, via, date, isDateDep, options, numItineraries);
+            return new TripsQueryContext(from, via, to, date, isDateDep, options, numItineraries);
         }
         @Override
         public boolean canQueryLater() {
