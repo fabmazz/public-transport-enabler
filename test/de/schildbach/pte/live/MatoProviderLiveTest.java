@@ -73,7 +73,9 @@ public class MatoProviderLiveTest extends AbstractProviderLiveTest {
             }
         }
 
+        QueryTripsResult resExtra = provider.queryMoreTrips(result.context, true);
 
+        assertSame(QueryTripsResult.Status.OK, resExtra.status);
 
     }
 
